@@ -175,19 +175,17 @@ func DelLease(url string, ip string) (int, string) {
 	return resp[0].Result, resp[0].Text
 }
 
-func UpdateTable(url string, index int, dispmode displayMode, subnet *Subnet4, table *tview.Table) {
+func UpdateTable(url string, dispmode displayMode, subnet *Subnet4, table *tview.Table) {
+	table.Clear()
 	switch dispmode {
 	case displayLeases:
-		leases := getLeases(url, subnet.Id)
-		table.Clear()
 		table.SetCell(0, 0, tview.NewTableCell("Hostname").SetTextColor(tcell.ColorYellow))
 		table.SetCell(0, 1, tview.NewTableCell("IP").SetTextColor(tcell.ColorYellow))
 		table.SetCell(0, 2, tview.NewTableCell("MAC").SetTextColor(tcell.ColorYellow))
 		table.SetCell(0, 3, tview.NewTableCell("State").SetTextColor(tcell.ColorYellow))
 		table.SetCell(0, 4, tview.NewTableCell("Timestamp").SetTextColor(tcell.ColorYellow))
 		table.SetCell(0, 5, tview.NewTableCell("Client ID").SetTextColor(tcell.ColorYellow))
-
-		for i, l := range leases {
+		for i, l := range getLeases(url, subnet.Id) {
 			t := time.Unix(l.Cltt, 0)
 			stateText, stateColor := LeaseState(l.State)
 			table.SetCell(i+1, 0, tview.NewTableCell(l.Hostname))
@@ -197,20 +195,49 @@ func UpdateTable(url string, index int, dispmode displayMode, subnet *Subnet4, t
 			table.SetCell(i+1, 4, tview.NewTableCell(t.Format("2006-01-02T15:04:05")))
 			table.SetCell(i+1, 5, tview.NewTableCell(l.ClientId))
 		}
-		table.ScrollToBeginning()
 	case displayReserv:
-		reservs := subnet.Reservations
-		table.Clear()
 		table.SetCell(0, 0, tview.NewTableCell("IP").SetTextColor(tcell.ColorYellow))
 		table.SetCell(0, 1, tview.NewTableCell("MAC").SetTextColor(tcell.ColorYellow))
 		table.SetCell(0, 2, tview.NewTableCell("Hostname").SetTextColor(tcell.ColorYellow))
-		for i, l := range reservs {
+		table.SetCell(0, 3, tview.NewTableCell("Bootfile").SetTextColor(tcell.ColorYellow))
+		table.SetCell(0, 4, tview.NewTableCell("Next Server").SetTextColor(tcell.ColorYellow))
+		table.SetCell(0, 5, tview.NewTableCell("Server Hostname").SetTextColor(tcell.ColorYellow))
+		for i, l := range subnet.Reservations {
 			table.SetCell(i+1, 0, tview.NewTableCell(l.IpAddress))
 			table.SetCell(i+1, 1, tview.NewTableCell(l.HwAddress))
 			table.SetCell(i+1, 2, tview.NewTableCell(l.Hostname))
+			table.SetCell(i+1, 3, tview.NewTableCell(l.BootFileName))
+			table.SetCell(i+1, 4, tview.NewTableCell(l.NextServer))
+			table.SetCell(i+1, 5, tview.NewTableCell(l.ServerHostname))
 		}
-		table.ScrollToBeginning()
 	}
+	table.ScrollToBeginning()
+}
+
+func SearchForwardList(input *tview.InputField, list *tview.List, line *tview.TextView) {
+	for _, i := range list.FindItems(input.GetText(), "", false, false) {
+		if i > list.GetCurrentItem() {
+			line.SetText("/" + input.GetText())
+			list.SetCurrentItem(i)
+			return
+		}
+	}
+	line.SetText("Pattern not found \"" + input.GetText() + "\"")
+}
+
+func SearchForwardTable(input *tview.InputField, table *tview.Table, line *tview.TextView) {
+	curr, _ := table.GetSelection()
+	for i := curr + 1; i < table.GetRowCount(); i++ {
+		for j := 0; j < table.GetColumnCount(); j++ {
+			if strings.Contains(table.GetCell(i, j).Text, input.GetText()) {
+				table.SetSelectable(true, false)
+				table.Select(i, 0)
+				line.SetText("/" + input.GetText())
+				return
+			}
+		}
+	}
+	line.SetText("Pattern not found \"" + input.GetText() + "\"")
 }
 
 func main() {
@@ -244,78 +271,20 @@ func main() {
 	subnetList.SetTitle("Subnets")
 	var prev tview.Primitive
 	prev = subnetList
-	subnetIds := make([]int, len(subnets))
-	for i, x := range subnets {
+	for _, x := range subnets {
 		subnetList.AddItem(x.Subnet, "", 0, nil)
-		subnetIds[i] = x.Id
 	}
 	subnetList.SetSelectedFunc(func(index int, text string, stext string, r rune) {
-		switch dispmode {
-		case displayLeases:
-			leases := getLeases(url, subnetIds[index])
-			table.Clear()
-			table.SetCell(0, 0, tview.NewTableCell("Hostname").SetTextColor(tcell.ColorYellow))
-			table.SetCell(0, 1, tview.NewTableCell("IP").SetTextColor(tcell.ColorYellow))
-			table.SetCell(0, 2, tview.NewTableCell("MAC").SetTextColor(tcell.ColorYellow))
-			table.SetCell(0, 3, tview.NewTableCell("State").SetTextColor(tcell.ColorYellow))
-			table.SetCell(0, 4, tview.NewTableCell("Timestamp").SetTextColor(tcell.ColorYellow))
-			table.SetCell(0, 5, tview.NewTableCell("Client ID").SetTextColor(tcell.ColorYellow))
-
-			for i, l := range leases {
-				t := time.Unix(l.Cltt, 0)
-				stateText, stateColor := LeaseState(l.State)
-				table.SetCell(i+1, 0, tview.NewTableCell(l.Hostname))
-				table.SetCell(i+1, 1, tview.NewTableCell(l.IpAddress))
-				table.SetCell(i+1, 2, tview.NewTableCell(l.HwAddress))
-				table.SetCell(i+1, 3, tview.NewTableCell(stateText).SetTextColor(stateColor))
-				table.SetCell(i+1, 4, tview.NewTableCell(t.Format("2006-01-02T15:04:05")))
-				table.SetCell(i+1, 5, tview.NewTableCell(l.ClientId))
-			}
-			table.ScrollToBeginning()
-		case displayReserv:
-			reservs := subnets[index].Reservations
-			table.Clear()
-			table.SetCell(0, 0, tview.NewTableCell("IP").SetTextColor(tcell.ColorYellow))
-			table.SetCell(0, 1, tview.NewTableCell("MAC").SetTextColor(tcell.ColorYellow))
-			table.SetCell(0, 2, tview.NewTableCell("Hostname").SetTextColor(tcell.ColorYellow))
-			for i, l := range reservs {
-				table.SetCell(i+1, 0, tview.NewTableCell(l.IpAddress))
-				table.SetCell(i+1, 1, tview.NewTableCell(l.HwAddress))
-				table.SetCell(i+1, 2, tview.NewTableCell(l.Hostname))
-			}
-			table.ScrollToBeginning()
-		}
+		UpdateTable(url, dispmode, &subnets[index], table)
 	})
-
 	statusinput.SetFinishedFunc(func(key tcell.Key) {
 		statuspage.SwitchToPage("line")
 		app.SetFocus(prev)
 		switch prev {
 		case subnetList:
-			indexes := subnetList.FindItems(statusinput.GetText(), "", false, false)
-			if len(indexes) == 0 {
-				statusline.SetText("Pattern not found\"" + statusinput.GetText() + "\"")
-			} else {
-				statusline.SetText("/" + statusinput.GetText())
-				subnetList.SetCurrentItem(indexes[0])
-			}
+			SearchForwardList(statusinput, subnetList, statusline)
 		case table:
-			var indexes []int
-			for i := 1; i < table.GetRowCount(); i++ {
-				for j := 0; j < table.GetColumnCount(); j++ {
-					if strings.Contains(table.GetCell(i, j).Text, statusinput.GetText()) {
-						indexes = append(indexes, i)
-						break
-					}
-				}
-			}
-			if len(indexes) == 0 {
-				statusline.SetText("Pattern not found\"" + statusinput.GetText() + "\"")
-			} else {
-				table.SetSelectable(true, false)
-				table.Select(indexes[0], 0)
-				statusline.SetText("/" + statusinput.GetText())
-			}
+			SearchForwardTable(statusinput, table, statusline)
 		}
 	})
 
@@ -347,16 +316,7 @@ func main() {
 			return tcell.NewEventKey(tcell.KeyUp, 257, tcell.ModNone)
 		}
 		if event.Rune() == 'n' {
-			indexes := subnetList.FindItems(statusinput.GetText(), "", false, false)
-			curr := subnetList.GetCurrentItem()
-			for _, i := range indexes {
-				if i > curr {
-					statusline.SetText("/" + statusinput.GetText())
-					subnetList.SetCurrentItem(i)
-					return event
-				}
-			}
-			statusline.SetText("Pattern not found \"" + statusinput.GetText() + "\"")
+			SearchForwardList(statusinput, subnetList, statusline)
 			return event
 		}
 		if event.Rune() == 'N' {
@@ -401,18 +361,7 @@ func main() {
 			}
 		}
 		if event.Rune() == 'n' {
-			curr, _ := table.GetSelection()
-			for i := curr + 1; i < table.GetRowCount(); i++ {
-				for j := 0; j < table.GetColumnCount(); j++ {
-					if strings.Contains(table.GetCell(i, j).Text, statusinput.GetText()) {
-						table.SetSelectable(true, false)
-						table.Select(i, 0)
-						statusline.SetText("/" + statusinput.GetText())
-						return event
-					}
-				}
-			}
-			statusline.SetText("Pattern not found \"" + statusinput.GetText() + "\"")
+			SearchForwardTable(statusinput, table, statusline)
 			return event
 		}
 		if event.Rune() == 'N' {
@@ -467,7 +416,6 @@ func main() {
 		if event.Rune() == 'm' {
 			dispmode = (dispmode + 1) % 2
 			UpdateTable(url,
-				subnetList.GetCurrentItem(),
 				dispmode,
 				&subnets[subnetList.GetCurrentItem()],
 				table)
