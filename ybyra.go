@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -20,6 +21,7 @@ type displayMode uint8
 const (
 	displayLeases displayMode = 0
 	displayReserv             = 1
+	displayInfo               = 2
 )
 
 const (
@@ -27,6 +29,10 @@ const (
 	statusGet            = "status-get"
 	lease4GetAll         = "lease4-get-all"
 	lease4Del            = "lease4-del"
+)
+
+const (
+	leaseColumns = 6
 )
 
 type KeaRequest[T any] struct {
@@ -56,17 +62,17 @@ type Subnet4 struct {
 	FourSixSubnet      string                     `json:"4o6-subnet"`
 	CalculateTeeTimes  bool                       `json:"calculate-tee-times"`
 	Id                 int                        `json:"id"`
-	OptionData         []json.RawMessage          `json:"option-data"`
-	Pools              []json.RawMessage          `json:"pools"`
-	RebindTime         int                        `json:"rebind-timer"`
+	OptionData         []OptionData               `json:"option-data"`
+	Pools              []Pool                     `json:"pools"`
+	RebindTimer        int                        `json:"rebind-timer"`
 	Relay              map[string]json.RawMessage `json:"relay"`
 	RenewTimer         int                        `json:"renew-timer"`
 	Reservations       []Reservation              `json:"reservations"`
 	StoreExtendedInfo  bool                       `json:"store-extended-info"`
 	Subnet             string                     `json:"subnet"`
-	// T1Percent float32 `json:"t1-percent"`
-	// T2Percent float32 `json:"t2-percent"`
-	// ValidLifetime int `json:"valid-lifetime"`
+	T1Percent          float32                    `json:"t1-percent"`
+	T2Percent          float32                    `json:"t2-percent"`
+	ValidLifetime      int                        `json:"valid-lifetime"`
 }
 
 type Lease4 struct {
@@ -91,6 +97,25 @@ type Reservation struct {
 	NextServer     string            `json:"next-server"`
 	OptionData     []json.RawMessage `json:"option-data"`
 	ServerHostname string            `json:"server-hostname"`
+}
+
+type OptionData struct {
+	AlwaysSend bool   `json:"always-send"`
+	Code       int    `json:"code"`
+	CsvFormat  bool   `json:"csv-format"`
+	Data       string `json:"data"`
+	Name       string `json:"name"`
+	Space      string `json:"space"`
+}
+
+type Pool struct {
+	OptionData []OptionData `json:"option-data"`
+	Pool       string       `json:"pool""`
+}
+
+type SortData struct {
+	Column int
+	Asc    bool
 }
 
 func LeaseState(state int) (string, tcell.Color) {
@@ -175,20 +200,90 @@ func DelLease(url string, ip string) (int, string) {
 	return resp[0].Result, resp[0].Text
 }
 
-func UpdateTable(url string, dispmode displayMode, subnet *Subnet4, table *tview.Table) {
+// Helper function for comparing Leases
+func cmp[T interface{ int | int64 | string }](i, j T) int {
+	if i == j {
+		return 0
+	} else if i < j {
+		return -1
+	}
+	return 1
+}
+
+// Compares two leases. Returns 0 if l1 == l2, -1 if l1 < l2,
+// and 1 if l1 > l2
+func (l1 *Lease4) Compare(l2 *Lease4, field int) int {
+	switch field {
+	case 0:
+		return cmp(l1.Hostname, l2.Hostname)
+	case 1:
+		return bytes.Compare(
+			net.ParseIP(l1.IpAddress),
+			net.ParseIP(l2.IpAddress))
+	case 2:
+		return cmp(l1.HwAddress, l2.HwAddress)
+	case 3:
+		return cmp(l1.State, l2.State)
+	case 4:
+		return cmp(l1.Cltt, l2.Cltt)
+	case 5:
+		return cmp(l1.ClientId, l2.ClientId)
+	}
+	return 0
+}
+
+func UpdateTable(url string, dispmode displayMode, subnet *Subnet4, table *tview.Table, sortorder *[]SortData) {
 	table.Clear()
+	sortfunc := func(col int) func() bool {
+		return func() bool {
+			(*sortorder)[0].Column = col
+			(*sortorder)[0].Asc = !(*sortorder)[0].Asc
+			UpdateTable(url, dispmode, subnet, table, sortorder)
+			return false
+		}
+	}
 	switch dispmode {
 	case displayLeases:
-		table.SetCell(0, 0, tview.NewTableCell("Hostname").SetTextColor(tcell.ColorYellow))
-		table.SetCell(0, 1, tview.NewTableCell("IP").SetTextColor(tcell.ColorYellow))
-		table.SetCell(0, 2, tview.NewTableCell("MAC").SetTextColor(tcell.ColorYellow))
-		table.SetCell(0, 3, tview.NewTableCell("State").SetTextColor(tcell.ColorYellow))
-		table.SetCell(0, 4, tview.NewTableCell("Timestamp").SetTextColor(tcell.ColorYellow))
-		table.SetCell(0, 5, tview.NewTableCell("Client ID").SetTextColor(tcell.ColorYellow))
-		for i, l := range getLeases(url, subnet.Id) {
+		table.SetCell(0, 0, tview.NewTableCell("Hostname").
+			SetTextColor(tcell.ColorYellow).
+			SetClickedFunc(sortfunc(0)))
+		table.SetCell(0, 1, tview.NewTableCell("IP").
+			SetTextColor(tcell.ColorYellow).
+			SetClickedFunc(sortfunc(1)))
+		table.SetCell(0, 2, tview.NewTableCell("MAC").
+			SetTextColor(tcell.ColorYellow).
+			SetClickedFunc(sortfunc(2)))
+		table.SetCell(0, 3, tview.NewTableCell("State").
+			SetTextColor(tcell.ColorYellow).
+			SetClickedFunc(sortfunc(3)))
+		table.SetCell(0, 4, tview.NewTableCell("Timestamp").
+			SetTextColor(tcell.ColorYellow).
+			SetClickedFunc(sortfunc(4)))
+		table.SetCell(0, 5, tview.NewTableCell("Client ID").
+			SetTextColor(tcell.ColorYellow).
+			SetClickedFunc(sortfunc(5)))
+		leases := getLeases(url, subnet.Id)
+		column := (*sortorder)[0].Column
+		sort.Slice(leases, func(i, j int) bool {
+			if (*sortorder)[0].Asc {
+				return leases[i].Compare(&leases[j], column) < 0
+			}
+			return leases[i].Compare(&leases[j], column) > 0
+
+		})
+		for i, l := range leases {
 			t := time.Unix(l.Cltt, 0)
+			prefix := ""
+			var attr tcell.AttrMask = 0
+			for _, r := range subnet.Reservations {
+				if r.IpAddress == l.IpAddress {
+					attr = tcell.AttrBold
+					prefix = "*"
+					break
+				}
+			}
 			stateText, stateColor := LeaseState(l.State)
-			table.SetCell(i+1, 0, tview.NewTableCell(l.Hostname))
+			table.SetCell(i+1, 0, tview.NewTableCell(prefix+l.Hostname).SetAttributes(attr))
 			table.SetCell(i+1, 1, tview.NewTableCell(l.IpAddress))
 			table.SetCell(i+1, 2, tview.NewTableCell(l.HwAddress))
 			table.SetCell(i+1, 3, tview.NewTableCell(stateText).SetTextColor(stateColor))
@@ -210,6 +305,43 @@ func UpdateTable(url string, dispmode displayMode, subnet *Subnet4, table *tview
 			table.SetCell(i+1, 4, tview.NewTableCell(l.NextServer))
 			table.SetCell(i+1, 5, tview.NewTableCell(l.ServerHostname))
 		}
+	case displayInfo:
+		lifetime := time.Duration(subnet.ValidLifetime) * time.Second
+		rebind := time.Duration(subnet.RebindTimer) * time.Second
+		renew := time.Duration(subnet.RenewTimer) * time.Second
+		table.SetCell(0, 0, tview.NewTableCell("Subnet").SetTextColor(tcell.ColorYellow))
+		table.SetCell(0, 1, tview.NewTableCell(subnet.Subnet))
+		table.SetCell(1, 0, tview.NewTableCell("Valid-lifetime").SetTextColor(tcell.ColorYellow))
+		table.SetCell(1, 1, tview.NewTableCell(lifetime.String()))
+		table.SetCell(2, 0, tview.NewTableCell("Rebind-timer").SetTextColor(tcell.ColorYellow))
+		table.SetCell(2, 1, tview.NewTableCell(rebind.String()))
+		table.SetCell(3, 0, tview.NewTableCell("Renew-timer").SetTextColor(tcell.ColorYellow))
+		table.SetCell(3, 1, tview.NewTableCell(renew.String()))
+		table.SetCell(4, 0, tview.NewTableCell("ID").SetTextColor(tcell.ColorYellow))
+		table.SetCell(4, 1, tview.NewTableCell(strconv.Itoa(subnet.Id)))
+		i := 5
+		for _, pool := range subnet.Pools {
+			ips := strings.Split(pool.Pool, "-")
+			table.SetCell(i, 0, tview.NewTableCell("Pool").SetTextColor(tcell.ColorYellow))
+			table.SetCell(i, 1, tview.NewTableCell(ips[0]))
+			table.SetCell(i+1, 1, tview.NewTableCell(ips[1]))
+			i += 2
+		}
+		for _, opt := range subnet.OptionData {
+			table.SetCell(i, 0, tview.NewTableCell("Option-data").SetTextColor(tcell.ColorYellow))
+			table.SetCell(i, 1, tview.NewTableCell("Name").SetTextColor(tcell.ColorYellow))
+			table.SetCell(i, 2, tview.NewTableCell(opt.Name))
+			table.SetCell(i+1, 1, tview.NewTableCell("Data").SetTextColor(tcell.ColorYellow))
+			table.SetCell(i+1, 2, tview.NewTableCell(opt.Data))
+			table.SetCell(i+2, 1, tview.NewTableCell("Code").SetTextColor(tcell.ColorYellow))
+			table.SetCell(i+2, 2, tview.NewTableCell(strconv.Itoa(opt.Code)))
+			table.SetCell(i+3, 1, tview.NewTableCell("Space").SetTextColor(tcell.ColorYellow))
+			table.SetCell(i+3, 2, tview.NewTableCell(opt.Space))
+			table.SetCell(i+4, 1, tview.NewTableCell("CSV-Format").SetTextColor(tcell.ColorYellow))
+			table.SetCell(i+4, 2, tview.NewTableCell(strconv.FormatBool(opt.CsvFormat)))
+			i += 5
+		}
+
 	}
 	table.ScrollToBeginning()
 }
@@ -246,6 +378,10 @@ func main() {
 		url = "http://" + os.Args[1] + ":8000"
 	}
 	dispmode := displayLeases
+	sortorder := []SortData{
+		SortData{4, true},
+		SortData{1, true},
+	}
 	subnets := getSubnets(url)
 	// Sorts the subnets by IP
 	sort.Slice(subnets, func(i, j int) bool {
@@ -259,7 +395,7 @@ func main() {
 		SetSelectable(false, false)
 	table.SetBorder(true)
 	table.SetTitle("Leases")
-	app := tview.NewApplication()
+	app := tview.NewApplication().EnableMouse(true)
 	statusline := tview.NewTextView().SetText(url)
 	statusinput := tview.NewInputField()
 	statuspage := tview.NewPages().
@@ -275,7 +411,7 @@ func main() {
 		subnetList.AddItem(x.Subnet, "", 0, nil)
 	}
 	subnetList.SetSelectedFunc(func(index int, text string, stext string, r rune) {
-		UpdateTable(url, dispmode, &subnets[index], table)
+		UpdateTable(url, dispmode, &subnets[index], table, &sortorder)
 	})
 	statusinput.SetFinishedFunc(func(key tcell.Key) {
 		statuspage.SwitchToPage("line")
@@ -414,16 +550,19 @@ func main() {
 			return nil
 		}
 		if event.Rune() == 'm' {
-			dispmode = (dispmode + 1) % 2
+			dispmode = (dispmode + 1) % 3
 			UpdateTable(url,
 				dispmode,
 				&subnets[subnetList.GetCurrentItem()],
-				table)
+				table,
+				&sortorder)
 			switch dispmode {
 			case displayLeases:
 				table.SetTitle("Leases")
 			case displayReserv:
 				table.SetTitle("Reservations")
+			case displayInfo:
+				table.SetTitle("Subnet Information")
 			}
 		}
 		return event
